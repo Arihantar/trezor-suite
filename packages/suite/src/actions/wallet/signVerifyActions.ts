@@ -1,8 +1,10 @@
 import TrezorConnect from 'trezor-connect';
-import { validateAddress } from '@wallet-utils/ethUtils';
+import { validateAddress as validateEthAddress } from '@wallet-utils/ethUtils';
+import { isAddressValid as validateBtcAddress } from '@wallet-utils/validation';
 import * as notificationActions from '@suite-actions/notificationActions';
 import { SIGN_VERIFY } from './constants';
-import { Dispatch, GetState } from '@suite-types';
+import { Dispatch } from '@suite-types';
+import { Account as Account$ } from '@wallet-reducers/accountsReducer';
 
 export type inputNameType =
     | 'signAddress'
@@ -20,26 +22,41 @@ export type SignVerifyActions =
     | { type: typeof SIGN_VERIFY.TOUCH; inputName: inputNameType }
     | { type: typeof SIGN_VERIFY.ERROR; inputName: inputNameType; message?: string };
 
-export const sign = (path: [number], message: string, hex = false) => async (
-    dispatch: Dispatch,
-    getState: GetState,
-) => {
-    const selectedDevice = getState().suite.device;
-    if (!selectedDevice) return;
-
-    const response = await TrezorConnect.ethereumSignMessage({
-        device: {
-            path: selectedDevice.path,
-            instance: selectedDevice.instance,
-            state: selectedDevice.state,
-        },
+export const sign = (
+    path: string,
+    message: string,
+    hex = false,
+    networkType: string,
+    coin: string,
+) => async (dispatch: Dispatch) => {
+    let fn;
+    const params = {
         path,
-        hex,
+        coin,
         message,
-        useEmptyPassphrase: selectedDevice.useEmptyPassphrase,
-    });
+        hex,
+    };
+    switch (networkType) {
+        case 'bitcoin':
+            fn = TrezorConnect.signMessage;
+            break;
+        case 'ethereum':
+            fn = TrezorConnect.ethereumSignMessage;
+            break;
+        default:
+            fn = () => ({
+                success: false,
+                payload: {
+                    error: `Unsupported network: ${networkType}`,
+                    code: undefined,
+                    signature: '',
+                },
+            });
+            break;
+    }
+    const response = await fn(params);
 
-    if (response && response.success) {
+    if (response.success === true) {
         dispatch({
             type: SIGN_VERIFY.SIGN_SUCCESS,
             signSignature: response.payload.signature,
@@ -54,13 +71,44 @@ export const sign = (path: [number], message: string, hex = false) => async (
     }
 };
 
-export const verify = (address: string, message: string, signature: string, hex = false) => async (
-    dispatch: Dispatch,
-    getState: GetState,
-) => {
-    const selectedDevice = getState().suite.device;
-    if (!selectedDevice) return;
-    const error = validateAddress(address);
+export const verify = (
+    address: string,
+    message: string,
+    signature: string,
+    hex = false,
+    networkType: string,
+    coin: string,
+) => async (dispatch: Dispatch) => {
+    let fn;
+    const params = {
+        address,
+        message,
+        signature,
+        coin,
+        hex,
+    };
+    let error = null;
+
+    switch (networkType) {
+        case 'bitcoin':
+            error = validateBtcAddress(address, coin as Account$['symbol']) ? null : 'Error';
+            fn = TrezorConnect.verifyMessage;
+            break;
+        case 'ethereum':
+            error = validateEthAddress(address);
+            fn = TrezorConnect.ethereumVerifyMessage;
+            break;
+        default:
+            fn = () => ({
+                success: false,
+                payload: {
+                    error: `Unsupported network: ${networkType}`,
+                    code: undefined,
+                    signature: '',
+                },
+            });
+            break;
+    }
 
     if (error) {
         dispatch({
@@ -68,36 +116,24 @@ export const verify = (address: string, message: string, signature: string, hex 
             inputName: 'verifyAddress',
             message: error,
         });
+        return;
     }
 
-    if (!error) {
-        const response = await TrezorConnect.ethereumVerifyMessage({
-            device: {
-                path: selectedDevice.path,
-                instance: selectedDevice.instance,
-                state: selectedDevice.state,
-            },
-            address,
-            message,
-            signature,
-            hex,
-            useEmptyPassphrase: selectedDevice.useEmptyPassphrase,
-        });
+    const response = await fn(params);
 
-        if (response && response.success) {
-            dispatch(
-                notificationActions.addToast({
-                    type: 'verify-message-success',
-                }),
-            );
-        } else {
-            dispatch(
-                notificationActions.addToast({
-                    type: 'verify-message-error',
-                    error: response.payload.error,
-                }),
-            );
-        }
+    if (response.success === true) {
+        dispatch(
+            notificationActions.addToast({
+                type: 'verify-message-success',
+            }),
+        );
+    } else {
+        dispatch(
+            notificationActions.addToast({
+                type: 'verify-message-error',
+                error: response.payload.error,
+            }),
+        );
     }
 };
 
@@ -112,16 +148,17 @@ export const inputChange = (inputName: inputNameType, value: string) => (dispatc
         inputName,
     });
 
-    if (inputName === 'verifyAddress') {
-        const error = validateAddress(value);
-        if (error) {
-            dispatch({
-                type: SIGN_VERIFY.ERROR,
-                inputName,
-                message: error,
-            });
-        }
-    }
+    // TODO: RETURN HERE after consultation
+    // if (inputName === 'verifyAddress') {
+    //     const error = validateEthAddress(value);
+    //     if (error) {
+    //         dispatch({
+    //             type: SIGN_VERIFY.ERROR,
+    //             inputName,
+    //             message: error,
+    //         });
+    //     }
+    // }
 };
 
 export const clearSign = (): SignVerifyActions => ({
